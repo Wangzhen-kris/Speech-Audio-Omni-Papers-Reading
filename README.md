@@ -254,4 +254,57 @@ Speech-to-ControlToken 数据主要由两部分组成。第一部分是从现有
 
 # 三、Audio&Speech类
 
+## 2. 《CosyVoice系列》
+### a. 介绍
+CosyVoice系列是针对TTS任务的模型，目前已经到第三代了，针对系列模型，本项目将会通过对比的方式进行介绍。
+### b. CosyVoice系列模型结构：
+**1. CosyVoice-1：**
+
+![Cosy1.jpg](https://tc-cdn.processon.com/po/63bd4ab6609b3a21680b7be9-68a17211e14e3c2bcf076acb)
+由四个组件组成，即：文本编码器、语音tokenizer、LLM模型和条件流匹配模型。
+- 文本编码器：没什么好讲的，主要是编码BPE tokens；
+- 语音tokenizer：是基于ASR任务的SenceVoice编码器层的输出进行VQ量化的单码本(50Hz)的语义Token方式；
+- LM模型：负责将输入自回归预测为语音tokens，正如图中所示，排列方式是顺序单向拼接，S表示“开始标记”，x-Vec为说话人Embedding，T表示文本到语音token的“转换标记”。
+- 条件流匹配模型：即采用最优传输条件流匹配模型（OT-CFM）来学习音频token到 Mel频谱的映射，在这里基础结构用的还是U-Net，需要注意的是：Speaker Embedding在做Zero-Shot的时候也加入了FM的输入中；
+- 指令微调：Cosyvoice开始使用Instruct数据进行指令控制微调训练。
+
+**2. CosyVoice-2：**
+
+![cosy2.jpg](https://tc-cdn.processon.com/po/63bd4ab6609b3a21680b7be9-68a176a8115ae0463c720af8)
+模型结构相较于CosyVoice-1并没有多大变化，只是在以下地方做了相应的优化升级：
+- Flow Matching：使用了chunk-aware causal flow matching model，将流式和非流式合成统一在一个框架中；训练时，Non-causal Mask、Full-causal Mask、Chunk-M Mask、Chunk-2M Mask四选一；
+- LM：使用预训练的Qwen2.5-0.5B 作为初始化，把第一版中的文本编码器和说话人嵌入删除，以简化 LM 架构；
+- 语音tokenizer：量化方式由VQ升级为FSQ，此外由50Hz压缩到25Hz，以提高码本利用率并捕获更多语音信息；
+- Instruct数据升级：升级指令数据，以支持更多指令；
+- 流式和非流式的处理：流式和非流式的区别在于LM的输入。对于非流式处理模式，序列开始标记、文本标记、语音转换标记、语音标记、序列结束标记按顺序连接，对于流式处理模式，以5:15的方式混合文本标记N和语音标记M，即每N个文本后面都是M个语音；
+- 说话人微调（SFT）和上下文学习（ICL）流式和非流式的处理：
+    - SFT-非流式：LM不再需要提示文本和语音，所以由【S-文本-T】初始序列自回归地生成语音token；
+    - SFT-流式：从【S-前N个文本】顺序开始生成语音（LM将生成M个语音标记），并手动填充接下来的N个文本标记，直到所有的文本标记用完，然后添加T；
+    - ICL-非流式：以【S-提示词-文本-T-参考语音】的顺序，LM的自回归生成语音token，直到检测到“序列结束”标记E；
+    - ICL-流式：将prompt文本和要合成的文本标记视为一个整体，然后按N：M的比例混合为【S-混合文本语音-T-剩余语音】，如果文本长度大于语音标记长度，LM将生成“填充标记”。在这种情况下，手动填充N个文本标记。如果文本标记用完，则将添加语音转折标记T。在流模式中，每M个令牌返回一次生成结果，直到检测到E。
+   
+**3. CosyVoice-3：**
+
+![cosy3.jpg](https://tc-cdn.processon.com/po/63bd4ab6609b3a21680b7be9-68a17d73e14e3c2bcf076b3b)
+模型结构相较于CosyVoice-2，开始用上了后训练技术（强化学习），具体优化体现在：
+- 语音tokenizer：通过监督式多任务训练，包括：语音识别（ASR）、语言识别（LID）、语音情感识别（SER）、音频事件检测（AED）和说话人分析（SA），这种分词器使离散语音标记能够更好地捕获副语言信息，例如情感和发音风格；
+- 
+
+### c. 网络结构和模块拆解
+
+**2. 视觉编码器和适配器用的是什么？**
+- 采用Qwen2.5-VL作为编码器，也就是Vision Transformer（ViT）视觉编码器，参数规模约为 675M。
+
+**3. 音频编码器、量化器和解码器用的是什么？**
+- 音频使用Whisper-large-v3作为编码器，量化器使用（25Hz）的Mel-VQ，解码器使用Flow-Matching DiT + BigVGAN 重建波形。
+
+**4. 重点提到的流式生成语音是怎么做的？**
+- 滑动窗口分块注意力机制（局部），该机制限制当前标记只能访问有限的上下文（2历史+1当前+1未来block）；
+- 在此，Flow Matching使用了Dit作为底层架构，输入包括：说话人embedding、ref梅尔特征、时间步t，求解使用10步四阶龙格-库塔法。
+
+**5. Thinker到Talker的交互是怎么做的？**
+- Talker的输入是：Thinker最终层隐藏特征 + 文本embedding（***作为流式算法，语音生成需要在完整文本生成前预判内容的语气和态度，Thinker 提供的高维语义表征隐含地传递了这类信息，使流式生成过程更加自然。**）；
+- 每一个t+1时刻输入均包含：Thinker最后一层输出特征，thinker文本embedding，t时刻输出的audio token的embedding。
+
+
 # 四、相关知识点&个人构想
