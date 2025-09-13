@@ -22,6 +22,8 @@
 
 **四、相关扩展类**
 - 《STITCH》
+- 《VibeVoice》-多人长对话
+- 《FireRedTTS-2》-多人长对话
 
 **五、相关知识点&个人观点**
 - 对话系统，进行实时语音交互的常见做法？
@@ -593,6 +595,32 @@ Speech-to-ControlToken 数据主要由两部分组成。第一部分是从现有
 - Stitch-S 中的“S”代表 “说话优先”，流程上进行了一处小改造：
     - 为了保证首包延迟，即担心Nreason 推理令牌会占用较多的时间，因此让系统先说话；
     - 这就意味着，在第一次生成语音时，是没有Nreason 推理令牌的，在第二次生成语音时才会有。
+
+## 2. 《VibeVoice》
+### a. 介绍&主要解决的问题
+&emsp; 本篇文章想要做的是：让模型能够连续合成多个Speaker的超长音频。为了实现这个目标，作者引入了一种超高压缩率的连续语音分词器，与Encodec比，压缩率再次提高了 80 倍，达到 7.5 Hz 帧速率，最终实现了多人90分钟长音频的生成。
+
+### b. 文章思路：
+
+![vibevoice.jpg](https://tc-cdn.processon.com/po/63bd4ab6609b3a21680b7be9-68c565ad9642253faa28812a)
+
+**核心思路**，总结为3点：
+- 语音量化（使用**acoustic tokens + semantic tokens**）：
+    - Acoustic Token：
+        - 使用一种称为σ-VAE的VAE变体架构，即方差σ是预定义的分布，该操作可以减轻在自回归建模设置中使用时 VAE 的潜在方差崩溃问题。其中编码器采用分层设计，具有 7 级使用 1D 深度因果卷积而不是自注意力模块的 Transformer，以实现高效的流处理，六个下采样层从 24kHz 输入实现累计 3200 倍下采样率，训练目标遵循 DAC ；
+    - Semantic Token:
+        - 也用了Acoustic Tokenizer一样的分层架构，使用多级Tansformer进行ASR任务的训练，以得到语义token。
+- 输入组织：
+    - 输入X=[Speaker1:𝒛1,Speaker2:𝒛2,…,SpeakerN:𝒛N]+[Speaker1:T1,Speaker2:T2,…,SpeakerN:TN]交错，其中"Speaker_x"为说话人标识，"𝒛_x"为语音prompt，"T_x"为输入文本。
+- Token-Level 的Diffusion自回归：
+    - 以 LLM 的每个token的隐藏状态为条件，输入到Diffusion模型中去预测Acoustic VAE中间表征z，z经过Decoder转成wav后又经过Semantic Encoder提取语义token，然后acoustic tokens + semantic tokens输入到LLM自回归进行生成。
+### c. 模块见解
+
+**1. 这是一个什么样的模型？**
+- 笔者认为这就是一个专门做的一个可以合成多说话人语音的可玩模型，并且该模型直接动了“LLM”底层对文本的理解和感知能力，因此工作的可扩展性比较差。
+  
+**2. 为什么把自回归设计的这么复杂？**
+- 首先文章使用了acoustic tokens + semantic tokens，笔者认为acoustic tokens的压缩率太高了，所以会损失很多信息，那么不得不用semantic tokens把最基础的语音信息给补回来。此外，结合文章的目标就是长音频生成，那么在生成长音频时，很容易出现音色变化的问题，那么这个时候通过在每一步都强制模型“认识”当前状态的“Speaker信息”是极其有必要的。
 
 # 五、相关知识点&个人观点
 
