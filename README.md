@@ -622,6 +622,40 @@ Speech-to-ControlToken 数据主要由两部分组成。第一部分是从现有
 **2. 为什么把自回归设计的这么复杂？**
 - 首先文章使用了acoustic tokens + semantic tokens，笔者认为acoustic tokens的压缩率太高了，所以会损失很多信息，那么不得不用semantic tokens把最基础的语音信息给补回来。此外，结合文章的目标就是长音频生成，那么在生成长音频时，很容易出现音色变化的问题，那么这个时候通过在每一步都强制模型“认识”当前状态的“Speaker信息”是极其有必要的。
 
+## 3. 《FireRedTTS-2》
+### a. 介绍&主要解决的问题
+&emsp; 本篇文章想要做的是：让模型能够连续合成多个Speaker的超长音频（看到这个目标，真的是有点尴尬，因为VibeVoice在它前几天刚发出来），于是这个文章不得不引用一下Vibe，但是呢，笔者看了，其长音频远不如Vibe“长”，同时其核心思路之一也跟Vibe类似。
+
+### b. 文章思路：
+
+![vibevoice.jpg](https://tc-cdn.processon.com/po/63bd4ab6609b3a21680b7be9-68c565ad9642253faa28812a)
+
+**核心思路**，总结为2点：
+- 语音量化（使用**acoustic + semantic tokens，注意并不是两种tokens**）：
+    - Acoustic 部分：
+        - 使用Whisper Encoder编码音频得到语义特征，然后加上Acoustic Encoder的特征后被量化成16个12.5Hz的码本，码本大小为2048，然后RVQ特征被上采样到 50Hz 并送到语义解码器，最后跟 Whisper 编码器得到的原始语义特征计算loss；
+    - Semantic 部分:
+        - 编码部分同Acoustic，解码器部分使用了Vocos范式进行流式解码训练，值得注意的是在训练Acoustic Decoder的时候，先是用 16kHz 语音以非流式训练，后用 24kHz 语音再以流式训练，因此声学解码器可以实现为流式或非流式处理。
+- 输入组织：
+    - 输入X=[Speaker1:T1,Speaker2:T2,…,SpeakerN:TN]+[Speaker1:z1,Speaker2:z2,…,SpeakerN:zN]交错，其中"Speaker_x"为说话人标识，"𝒛_x"为语音prompt，"T_x"为输入文本，跟VibeVoice相比调换了一下文本和音频token的位置。
+
+**训练步骤**，分为3个阶段：
+- 预训练阶段：
+    - 预训练阶段利用 1.1M 小时的独白语音数据，并训练模型 2 个 epoch 以构建基础的文本转语音能力；
+- 后训练阶段：
+    - 对 FireRedTTS-2 进行了 5 个 epoch 的后训练，用于 300k 小时的多说话人对话数据，每个对话包含 2 到 5 个说话人，以实现强大的多说话人对话生成；
+- SFT阶段：
+    - 应用 SFT 阶段以最少的数据将模型定制为特定声音。
+
+### c. 模块见解
+
+**1. 这是一个什么样的模型？**
+- 笔者认为这就是跟VibeVoice差不多形式的模型，但是没有VibeVoice“极端”。
+  
+**2. 自回归模块的设计？**
+- 遵循Vall-E模式，只不过把量化码本压缩得更厉害，但是码本个数也增加了。
+
+
 # 五、相关知识点&个人观点
 
 **Q： 对话系统，进行实时语音交互的常见做法？**
